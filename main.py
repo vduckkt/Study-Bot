@@ -5,32 +5,37 @@ import time
 import threading
 import schedule
 import asyncio
-from datetime import datetime, date
+from datetime import datetime
 import json
 import os
 
 TOKEN = "8863961057:AAG7HEOyNoAUOWxId4EcnkQal2Nrfrg1qks"
 CHAT_ID = "5389459772"
-
 DATA_FILE = "study_data.json"
 
-# ---------------- INIT ----------------
+
+# ================= INIT =================
 def default_data():
     return {
         "total_time": 0,
         "today_total": 0,
-        "month_total": 0,
-        "year_total": 0,
         "streak": 0,
         "last_day": "",
         "start_time": None,
-        "subjects_today": [],
-        "current_subject_index": 0,
 
         "xp": 0,
         "level": 1,
 
-        # PRIORITY TKB SYSTEM
+        "subjects_today": [],
+        "current_subject_index": 0,
+
+        "waiting_start": False,
+        "last_ping_time": 0,
+
+        "schedule_time": "18:45",
+
+        "dashboard_message_id": None,
+
         "schedule": {
             "Monday": [{"subject": "Lý", "priority": 1}],
             "Tuesday": [],
@@ -42,188 +47,170 @@ def default_data():
         }
     }
 
+
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
             return json.load(f)
     return default_data()
 
+
 def save_data():
     with open(DATA_FILE, "w") as f:
         json.dump(study_data, f)
 
+
 study_data = load_data()
 
 
-# ---------------- LEVEL SYSTEM ----------------
+# ================= XP =================
 def xp_needed(level):
     return level * level * 100
 
 
 def add_xp(minutes):
     study_data["xp"] += minutes * 10
-
     while study_data["xp"] >= xp_needed(study_data["level"]):
         study_data["xp"] -= xp_needed(study_data["level"])
         study_data["level"] += 1
 
 
-# ---------------- STREAK ----------------
+# ================= STREAK =================
 def update_streak():
-    today = str(date.today())
+    today = str(datetime.now().date())
     last = study_data["last_day"]
 
     if last != today:
-        yesterday = str(date.fromordinal(date.today().toordinal() - 1))
-
-        if last == yesterday:
-            study_data["streak"] += 1
-        else:
-            study_data["streak"] = 1
-
+        study_data["streak"] = study_data["streak"] + 1 if last == str(datetime.now().date()) else 1
         study_data["last_day"] = today
 
 
-# ---------------- SORT TKB ----------------
+# ================= TKB =================
 def get_sorted_subjects(day):
     raw = study_data["schedule"].get(day, [])
-
-    sorted_list = sorted(raw, key=lambda x: x.get("priority", 999))
-    return [x["subject"] for x in sorted_list]
+    return [x["subject"] for x in sorted(raw, key=lambda x: x["priority"])]
 
 
-# ---------------- MESSAGE ----------------
-async def send_study_message(app, subject_name):
-    keyboard = [[InlineKeyboardButton("▶ Bắt đầu", callback_data="start_study")]]
-    await app.bot.send_message(
+# ================= DASHBOARD =================
+def build_dashboard(subject):
+    return f"""
+📊 STUDY DASHBOARD
+
+📚 {subject}
+
+📅 Today: {study_data['today_total']}m
+🔥 Streak: {study_data['streak']}
+⭐ Lv: {study_data['level']}
+✨ XP: {study_data['xp']}/{xp_needed(study_data['level'])}
+
+🎮 Status: {"HỌC" if study_data["start_time"] else "RẢNH"}
+"""
+
+
+def keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("▶ Start", callback_data="start"),
+            InlineKeyboardButton("✅ Finish", callback_data="finish"),
+        ],
+        [
+            InlineKeyboardButton("⏭ Skip", callback_data="skip"),
+            InlineKeyboardButton("📅 TKB", callback_data="tkb"),
+        ],
+        [
+            InlineKeyboardButton("⏰ Set Time", callback_data="set_time")
+        ]
+    ])
+
+
+# ================= DASHBOARD =================
+async def send_dashboard(app, subject):
+    msg = await app.bot.send_message(
         chat_id=CHAT_ID,
-        text=f"📚 {subject_name} tới giờ rồi",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        text=build_dashboard(subject),
+        reply_markup=keyboard()
     )
+    study_data["dashboard_message_id"] = msg.message_id
+    save_data()
 
 
-# ---------------- BUTTON ----------------
+async def update_dashboard(app, subject):
+    try:
+        await app.bot.edit_message_text(
+            chat_id=CHAT_ID,
+            message_id=study_data["dashboard_message_id"],
+            text=build_dashboard(subject),
+            reply_markup=keyboard()
+        )
+    except:
+        pass
+
+
+# ================= BUTTONS =================
+user_state = {}
+
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    q = update.callback_query
+    await q.answer()
 
     idx = study_data["current_subject_index"]
     subjects = study_data["subjects_today"]
 
-    if not subjects:
-        await query.message.reply_text("❌ Không có lịch học")
-        return
-
-    if query.data == "start_study":
+    if q.data == "start":
         study_data["start_time"] = time.time()
+        study_data["waiting_start"] = False
         save_data()
-        await query.message.reply_text("⏱ Bắt đầu học rồi")
+        await update_dashboard(context.application, subjects[idx])
 
-    elif query.data == "finish_study":
-
-        if study_data["start_time"] is None:
+    elif q.data == "finish":
+        if not study_data["start_time"]:
             return
 
         duration = int((time.time() - study_data["start_time"]) / 60)
-
-        study_data["total_time"] += duration
         study_data["today_total"] += duration
-        study_data["month_total"] += duration
-        study_data["year_total"] += duration
-
         add_xp(duration)
 
         study_data["start_time"] = None
 
-        subject = subjects[idx]
-
-        await query.message.reply_text(
-            f"🎉 {subject} xong\n"
-            f"⏱ {study_data['today_total']} phút hôm nay\n"
-            f"⭐ Lv {study_data['level']} | XP {study_data['xp']}"
-        )
-
         study_data["current_subject_index"] += 1
-        idx = study_data["current_subject_index"]
 
-        if idx < len(subjects):
-
-            next_subject = subjects[idx]
-
-            await query.message.reply_text(
-                f"📚 Tiếp: {next_subject}",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("▶ Bắt đầu", callback_data="start_study")]
-                ])
-            )
-
-        else:
-            await query.message.reply_text("🔥 Hết hôm nay")
-
+        if study_data["current_subject_index"] >= len(subjects):
             study_data["current_subject_index"] = 0
             update_streak()
 
+        await update_dashboard(context.application, subjects[study_data["current_subject_index"]])
+
         save_data()
 
+    elif q.data == "skip":
+        study_data["current_subject_index"] += 1
+        if study_data["current_subject_index"] >= len(subjects):
+            study_data["current_subject_index"] = 0
 
-# ---------------- STATS ----------------
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"📊 STATS\n\n"
-        f"⏱ Total: {study_data['total_time']}m\n"
-        f"📅 Today: {study_data['today_total']}m\n"
-        f"📈 Month: {study_data['month_total']}m\n"
-        f"🔥 Streak: {study_data['streak']}\n"
-        f"⭐ Level: {study_data['level']}\n"
-        f"✨ XP: {study_data['xp']}/{xp_needed(study_data['level'])}"
-    )
+        await update_dashboard(context.application, subjects[study_data["current_subject_index"]])
+        save_data()
 
+    elif q.data == "tkb":
+        text = "\n".join([f"{d}: " + ", ".join([x['subject'] for x in v]) for d,v in study_data["schedule"].items()])
+        await q.message.reply_text(text)
 
-# ---------------- TKB COMMANDS (PRIORITY VERSION) ----------------
-async def tkb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "📅 TKB (priority):\n"
-
-    for d, v in study_data["schedule"].items():
-        if not v:
-            text += f"{d}: ---\n"
-        else:
-            sorted_v = sorted(v, key=lambda x: x.get("priority", 999))
-            text += f"{d}: " + ", ".join([f"{x['subject']}({x['priority']})" for x in sorted_v]) + "\n"
-
-    await update.message.reply_text(text)
+    elif q.data == "set_time":
+        user_state[q.from_user.id] = "waiting_time"
+        await q.message.reply_text("⏰ Nhập giờ kiểu 18:45")
 
 
-# ---------------- ADD ----------------
-async def add_subject(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    day = context.args[0]
-    subject = context.args[1]
-    priority = int(context.args[2])
+# ================= TEXT INPUT =================
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
 
-    study_data["schedule"].setdefault(day, []).append({
-        "subject": subject,
-        "priority": priority
-    })
-
-    save_data()
-    await update.message.reply_text("✅ Đã thêm môn")
+    if user_state.get(uid) == "waiting_time":
+        study_data["schedule_time"] = update.message.text
+        save_data()
+        user_state[uid] = None
+        await update.message.reply_text(f"⏰ Đã set giờ: {study_data['schedule_time']}")
 
 
-# ---------------- REMOVE ----------------
-async def remove_subject(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    day = context.args[0]
-    subject = context.args[1]
-
-    lst = study_data["schedule"].get(day, [])
-
-    study_data["schedule"][day] = [
-        x for x in lst if x["subject"] != subject
-    ]
-
-    save_data()
-    await update.message.reply_text("🗑 Đã xoá")
-
-
-# ---------------- SCHEDULE ----------------
+# ================= SCHEDULE =================
 def run_schedule(app):
 
     async def job():
@@ -232,10 +219,13 @@ def run_schedule(app):
         study_data["subjects_today"] = get_sorted_subjects(today)
         study_data["current_subject_index"] = 0
 
-        save_data()
+        study_data["waiting_start"] = True
+        study_data["last_ping_time"] = time.time()
 
         if study_data["subjects_today"]:
-            await send_study_message(app, study_data["subjects_today"][0])
+            await send_dashboard(app, study_data["subjects_today"][0])
+
+        save_data()
 
     schedule.every().day.at("18:45").do(lambda: asyncio.run(job()))
 
@@ -244,16 +234,28 @@ def run_schedule(app):
         time.sleep(1)
 
 
-# ---------------- MAIN ----------------
+# ================= ANTI SKIP =================
+def anti_skip(app):
+    while True:
+        time.sleep(30)
+
+        if study_data["waiting_start"]:
+            if time.time() - study_data["last_ping_time"] >= 600:
+                asyncio.run(app.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text="📢 học đi thằng lồn 😼"
+                ))
+                study_data["last_ping_time"] = time.time()
+
+
+# ================= MAIN =================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CallbackQueryHandler(button_click))
-app.add_handler(CommandHandler("stats", stats))
-app.add_handler(CommandHandler("tkb", tkb))
-app.add_handler(CommandHandler("add", add_subject))
-app.add_handler(CommandHandler("remove", remove_subject))
+app.add_handler(CommandHandler("text", text_handler))
 
-threading.Thread
+threading.Thread(target=run_schedule, args=(app,), daemon=True).start()
+threading.Thread(target=anti_skip, args=(app,), daemon=True).start()
 
-print("RUNNING BOT...")
+print("RUNNING PRO BOT 🚀")
 app.run_polling()
