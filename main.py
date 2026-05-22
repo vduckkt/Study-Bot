@@ -1,5 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, ContextTypes, filters
 
 import time
 import threading
@@ -33,7 +33,6 @@ def default_data():
         "last_ping_time": 0,
 
         "schedule_time": "18:45",
-
         "dashboard_message_id": None,
 
         "schedule": {
@@ -70,29 +69,38 @@ def xp_needed(level):
 
 def add_xp(minutes):
     study_data["xp"] += minutes * 10
+
     while study_data["xp"] >= xp_needed(study_data["level"]):
         study_data["xp"] -= xp_needed(study_data["level"])
         study_data["level"] += 1
 
 
-# ================= STREAK =================
+# ================= STREAK FIX =================
 def update_streak():
     today = str(datetime.now().date())
-    last = study_data["last_day"]
+    last = study_data.get("last_day", "")
 
     if last != today:
-        study_data["streak"] = study_data["streak"] + 1 if last == str(datetime.now().date()) else 1
+        yesterday = str(datetime.now().date().fromordinal(datetime.now().toordinal() - 1))
+
+        if last == yesterday:
+            study_data["streak"] += 1
+        else:
+            study_data["streak"] = 1
+
         study_data["last_day"] = today
 
 
-# ================= TKB =================
+# ================= SORT SAFE =================
 def get_sorted_subjects(day):
     raw = study_data["schedule"].get(day, [])
-    return [x["subject"] for x in sorted(raw, key=lambda x: x["priority"])]
+    return [x["subject"] for x in sorted(raw, key=lambda x: x.get("priority", 999))]
 
 
-# ================= DASHBOARD =================
+# ================= UI =================
 def build_dashboard(subject):
+    subject = subject if subject else "😴 nghỉ"
+
     return f"""
 📊 STUDY DASHBOARD
 
@@ -123,7 +131,7 @@ def keyboard():
     ])
 
 
-# ================= DASHBOARD =================
+# ================= DASHBOARD SAFE =================
 async def send_dashboard(app, subject):
     msg = await app.bot.send_message(
         chat_id=CHAT_ID,
@@ -135,6 +143,9 @@ async def send_dashboard(app, subject):
 
 
 async def update_dashboard(app, subject):
+    if not study_data.get("dashboard_message_id"):
+        return
+
     try:
         await app.bot.edit_message_text(
             chat_id=CHAT_ID,
@@ -146,71 +157,94 @@ async def update_dashboard(app, subject):
         pass
 
 
-# ================= BUTTONS =================
+# ================= BUTTON FIX =================
 user_state = {}
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    idx = study_data["current_subject_index"]
-    subjects = study_data["subjects_today"]
+    subjects = study_data.get("subjects_today", [])
+    idx = study_data.get("current_subject_index", 0)
 
+    # safe guard
+    if not subjects:
+        await q.message.reply_text("❌ Không có lịch học")
+        return
+
+    idx = min(idx, len(subjects) - 1)
+    subject = subjects[idx]
+
+    # START
     if q.data == "start":
         study_data["start_time"] = time.time()
         study_data["waiting_start"] = False
         save_data()
-        await update_dashboard(context.application, subjects[idx])
+        await update_dashboard(context.application, subject)
 
+    # FINISH
     elif q.data == "finish":
         if not study_data["start_time"]:
             return
 
         duration = int((time.time() - study_data["start_time"]) / 60)
+
         study_data["today_total"] += duration
         add_xp(duration)
 
         study_data["start_time"] = None
 
         study_data["current_subject_index"] += 1
+        idx = study_data["current_subject_index"]
+
+        if idx >= len(subjects):
+            study_data["current_subject_index"] = 0
+            update_streak()
+            await q.message.reply_text("🔥 Hết buổi học")
+        else:
+            await update_dashboard(context.application, subjects[idx])
+
+        save_data()
+
+    # SKIP
+    elif q.data == "skip":
+        study_data["current_subject_index"] += 1
 
         if study_data["current_subject_index"] >= len(subjects):
             study_data["current_subject_index"] = 0
             update_streak()
 
-        await update_dashboard(context.application, subjects[study_data["current_subject_index"]])
-
         save_data()
 
-    elif q.data == "skip":
-        study_data["current_subject_index"] += 1
-        if study_data["current_subject_index"] >= len(subjects):
-            study_data["current_subject_index"] = 0
+        idx = study_data["current_subject_index"]
+        await update_dashboard(context.application, subjects[idx])
 
-        await update_dashboard(context.application, subjects[study_data["current_subject_index"]])
-        save_data()
-
+    # TKB
     elif q.data == "tkb":
-        text = "\n".join([f"{d}: " + ", ".join([x['subject'] for x in v]) for d,v in study_data["schedule"].items()])
+        text = "📅 TKB:\n"
+        for d, v in study_data["schedule"].items():
+            text += f"{d}: " + ", ".join([x["subject"] for x in v]) + "\n"
         await q.message.reply_text(text)
 
+    # SET TIME
     elif q.data == "set_time":
         user_state[q.from_user.id] = "waiting_time"
-        await q.message.reply_text("⏰ Nhập giờ kiểu 18:45")
+        await q.message.reply_text("⏰ Nhập giờ (vd 18:45)")
 
 
-# ================= TEXT INPUT =================
+# ================= TEXT HANDLER FIX =================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
 
     if user_state.get(uid) == "waiting_time":
         study_data["schedule_time"] = update.message.text
-        save_data()
         user_state[uid] = None
-        await update.message.reply_text(f"⏰ Đã set giờ: {study_data['schedule_time']}")
+        save_data()
+
+        await update.message.reply_text(f"⏰ Đã set: {study_data['schedule_time']}")
 
 
-# ================= SCHEDULE =================
+# ================= SCHEDULE FIX =================
 def run_schedule(app):
 
     async def job():
@@ -218,7 +252,6 @@ def run_schedule(app):
 
         study_data["subjects_today"] = get_sorted_subjects(today)
         study_data["current_subject_index"] = 0
-
         study_data["waiting_start"] = True
         study_data["last_ping_time"] = time.time()
 
@@ -227,19 +260,19 @@ def run_schedule(app):
 
         save_data()
 
-    schedule.every().day.at("18:45").do(lambda: asyncio.run(job()))
+    schedule.every().day.at(study_data["schedule_time"]).do(lambda: asyncio.run(job()))
 
     while True:
         schedule.run_pending()
         time.sleep(1)
 
 
-# ================= ANTI SKIP =================
+# ================= ANTI SKIP FIX =================
 def anti_skip(app):
     while True:
         time.sleep(30)
 
-        if study_data["waiting_start"]:
+        if study_data.get("waiting_start"):
             if time.time() - study_data["last_ping_time"] >= 600:
                 asyncio.run(app.bot.send_message(
                     chat_id=CHAT_ID,
@@ -252,7 +285,7 @@ def anti_skip(app):
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CallbackQueryHandler(button_click))
-app.add_handler(CommandHandler("text", text_handler))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 threading.Thread(target=run_schedule, args=(app,), daemon=True).start()
 threading.Thread(target=anti_skip, args=(app,), daemon=True).start()
