@@ -9,7 +9,7 @@ from datetime import datetime
 import json
 import os
 
-TOKEN = "8863961057:AAG7HEOyNoAUOWxId4EcnkQal2Nrfrg1qks"
+TOKEN = ":AAG7HEOyNoAUOWxId4EcnkQal2Nrfrg1qks"
 CHAT_ID = "5389459772"
 DATA_FILE = "study_data.json"
 
