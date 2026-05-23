@@ -20,7 +20,11 @@ from telegram.ext import (
 # CONFIG
 # =========================
 
-TOKEN = os.getenv("BOT_TOKEN","8863961057:AAEQIO5p-T_-jNCiqyXPkImhVIPZtACxTH0")
+TOKEN = ""
+
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN not set")
+
 CHAT_ID = 5389459772
 DATA_FILE = Path("study_data.json")
 
@@ -106,7 +110,7 @@ def reset_day():
         save()
 
 # =========================
-# XP
+# XP SYSTEM
 # =========================
 
 def xp_need(lv):
@@ -128,25 +132,23 @@ def current_subject():
     return lst[i] if 0 <= i < len(lst) else None
 
 # =========================
-# EXAM COUNTDOWN
+# EXAM COUNTDOWN (FIXED)
 # =========================
 
 def exam_countdown():
     now = datetime.now(TZ)
-
     target = datetime(2027, 6, 12, 0, 0, 0, tzinfo=TZ)
 
     diff = target - now
-
-    if diff.total_seconds() < 0:
+    if diff.total_seconds() <= 0:
         return "🎉 Đã tới kỳ thi!"
 
-    days = diff.days
-    seconds = diff.seconds
+    total = int(diff.total_seconds())
 
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
+    days = total // 86400
+    hours = (total % 86400) // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
 
     return f"{days} ngày {hours} giờ {minutes} phút {secs} giây"
 
@@ -221,11 +223,11 @@ async def show_main(app, text=None, kb=None):
             save()
 
 # =========================
-# SCHEDULER (FIXED)
+# SCHEDULER
 # =========================
 
 def schedule_job(app):
-    if not app.job_queue:
+    if not getattr(app, "job_queue", None):
         return
 
     for job in app.job_queue.get_jobs_by_name(DAILY_JOB_NAME):
@@ -263,14 +265,12 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_day()
     d = q.data
 
-    # HOME
     if d == "home":
         data["mode"] = None
         data["temp_day"] = None
         save()
         return await show_main(context.application)
 
-    # STUDY
     if d == "study":
         day = today()
         data["subjects_today"] = data["schedule"][day]
@@ -282,35 +282,29 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return await show_main(context.application, f"📚 {data['subjects_today'][0]}", start_btn())
 
-    # TKB
     if d == "tkb":
         text = "📅 TKB\n\n"
         for i in WEEKDAYS:
             text += f"{i}: " + (" → ".join(data["schedule"][i]) or "---") + "\n"
         return await show_main(context.application, text, back_home())
 
-    # ADD / REMOVE
     if d in ["add", "remove"]:
         data["mode"] = d
         save()
         return await show_main(context.application, "📅 Chọn ngày:", day_select_kb(d))
 
-    # DAY SELECT
     if "_" in d and (d.startswith("add_") or d.startswith("remove_")):
         action, day = d.split("_")
-        full_day = DAY_MAP[day]
         data["mode"] = action
-        data["temp_day"] = full_day
+        data["temp_day"] = DAY_MAP[day]
         save()
-        return await show_main(context.application, f"✍️ Nhập môn cho {full_day}:", back_home())
+        return await show_main(context.application, f"✍️ Nhập môn cho {DAY_MAP[day]}:", back_home())
 
-    # START
     if d == "start":
         data["start_time"] = time.time()
         save()
         return await show_main(context.application, "⏱ Studying...", finish_btn())
 
-    # FINISH
     if d == "finish":
         if not data.get("start_time"):
             return
@@ -339,20 +333,16 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             menu_kb()
         )
 
-    # STATS
     if d == "stats":
         total = data["total_time"]
         hours = total // 60
-
-        exam_time = exam_countdown()
-        now_time = f"{data['notify_hour']:02d}:{data['notify_minute']:02d}"
 
         text = (
             f"📊 STATS\n\n"
             f"⭐ Lv: {data['level']}\n"
             f"✨ XP: {data['xp']}/{xp_need(data['level'])}\n\n"
-            f"📌 THPTQG:\n⏳ {exam_time}\n\n"
-            f"⏰ Notify: {now_time}\n\n"
+            f"📌 THPTQG:\n⏳ {exam_countdown()}\n\n"
+            f"⏰ Notify: {data['notify_hour']:02d}:{data['notify_minute']:02d}\n\n"
             f"⏱ Today: {data['today_total']}m\n"
             f"⏱ Total: {total}m\n"
             f"🕒 ~{hours}h"
@@ -360,7 +350,6 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return await show_main(context.application, text, back_home())
 
-    # SET TIME
     if d == "settime":
         data["mode"] = "settime"
         save()
@@ -381,19 +370,13 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["schedule"][day].append(txt)
 
     elif data["mode"] == "remove":
-        lst = data["schedule"][day]
-        for i, x in enumerate(lst):
-            if x.lower() == txt.lower():
-                lst.pop(i)
-                break
+        data["schedule"][day] = [x for x in data["schedule"][day] if x.lower() != txt.lower()]
 
     elif data["mode"] == "settime":
         try:
             h, m = map(int, txt.split(":"))
-
             data["notify_hour"] = h
             data["notify_minute"] = m
-
             save()
             schedule_job(context.application)
 
