@@ -20,7 +20,7 @@ from telegram.ext import (
 # CONFIG
 # =========================
 
-TOKEN = os.getenv("BOT_TOKEN", "8863961057:AAEQIO5p-T_-jNCiqyXPkImhVIPZtACxTH0")
+TOKEN = os.getenv("BOT_TOKEN","8863961057:AAEQIO5p-T_-jNCiqyXPkImhVIPZtACxTH0")
 CHAT_ID = 5389459772
 DATA_FILE = Path("study_data.json")
 
