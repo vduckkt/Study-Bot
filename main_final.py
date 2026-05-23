@@ -20,7 +20,7 @@ from telegram.ext import (
 # CONFIG
 # =========================
 
-TOKEN = ""
+TOKEN = "8863961057:AAEQIO5p-T_-jNCiqyXPkImhVIPZtACxTH0"
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN not set")
